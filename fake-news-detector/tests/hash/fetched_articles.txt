@@ -1,0 +1,50 @@
+Article #1
+Title: I test a lot of AI coding tools, and this stunning new OpenAI release just saved me days of work
+Description: It took ChatGPT Deep Research minutes to reverse-engineer my full GitHub repo, when I'd need days. Here's why this is a big deal.
+URL: https://www.zdnet.com/article/i-test-a-lot-of-ai-coding-tools-and-this-stunning-new-openai-release-just-saved-me-days-of-work/
+--------------------------------------------------------------------------------
+Article #2
+Title: ChatGPT's Deep Research tool can create reports from hundreds of online sources
+Description: Following the release of o3-mini, OpenAI announced on Sunday Deep Research, a new agentic tool for ChatGPT.
+URL: https://www.engadget.com/ai/chatgpts-deep-research-tool-can-create-reports-from-hundreds-of-online-sources-022223298.html
+--------------------------------------------------------------------------------
+Article #3
+Title: OpenAI Releases o3-mini in Response to DeepSeek, Makes it Free for All
+Description: OpenAI has announced the release of OpenAI o3-mini, a new AI model built to deliver cost-effective reasoning with improved efficiency and STEM capabilities. The model is available in ChatGPT and the API, replacing OpenAI o1-mini in the model selection.
+URL: https://analyticsindiamag.com/ai-news-updates/openai-releases-o3-mini-in-response-to-deepseek-makes-it-free-for-all/
+--------------------------------------------------------------------------------
+Article #4
+Title: New reasoning model coming out?
+Description: With DeepSeek R1 matching ChatGPT o1, the o3 release seems inevitable, but that’s because OpenAI already set it that way.
+URL: https://bgr.com/tech/forget-deepseek-ai-when-is-chatgpt-o3-mini-coming-out/
+--------------------------------------------------------------------------------
+Article #5
+Title: Nvidia’s $3,000 Project Digits puts a 1-Petaflop AI on your desk
+Description: Nvidia announced a new $3,000 PC-sized AI supercomputer for researchers and enterprises that can run ChatGPT locally. It is scheduled for release in May.
+URL: https://www.digitaltrends.com/computing/nvidia-3000-project-digits-plops-1pflop-ai-in-your-palm-arrives-in-may/
+--------------------------------------------------------------------------------
+Article #6
+Title: What OpenAI might release next
+Description: Sam Altman asked ChatGPT users what new features they want for 2025, teasing what’s coming next from OpenAI.
+URL: https://bgr.com/tech/new-chatgpt-features-for-2025-from-sam-altmans-chat-with-users/
+--------------------------------------------------------------------------------
+Article #7
+Title: 12 Days of OpenAI LIVE: ChatGPT-maker to release Sora and other advanced AI features
+Description: OpenAI is announcing something new every weekday until December 20. So far we've had o1 and ChatGPT Pro but with Sora, Advanced Voice and more still to come — its going to be a busy two weeks.
+URL: https://www.tomsguide.com/news/live/12-days-of-open-ai-live-blog-sora-chatgpt
+--------------------------------------------------------------------------------
+Article #8
+Title: 12 Days of OpenAI - The Countdown Begins
+Description: It’s celebration time at OpenAI! Close on the heels of ChatGPT’s second birthday, the AI powerhouse has announced plans to release new models and features over the next twelve days.
+URL: https://analyticsindiamag.com/ai-mysteries/12-days-of-openai-the-countdown-begins/
+--------------------------------------------------------------------------------
+Article #9
+Title: Apple said to bring ChatGPT-like ‘LLM Siri’ for iOS 19: Here’s what we know so far
+Description: Apple is developing a new Siri with enhanced conversational abilities, leveraging advanced language models, anticipated to debut with iOS 19 in 2025. The updated assistant, called 'LLM Siri', is projected for release in Spring 2026, maintaining third-party AI integration.
+URL: https://www.livemint.com/technology/tech-news/apple-said-to-bring-chatgpt-like-llm-siri-for-ios-19-iphone-17-macos-16-here-s-what-we-know-so-far-11732262007545.html
+--------------------------------------------------------------------------------
+Article #10
+Title: OpenAI releases a teacher's guide to ChatGPT, but some educators are skeptical
+Description: OpenAI has partnered with Common Sense Media to release a new resource for K-12 teachers using ChatGPT. But some educators are skeptical.
+URL: https://techcrunch.com/2024/11/20/openai-releases-a-teachers-guide-to-chatgpt-but-some-educators-are-skeptical/
+--------------------------------------------------------------------------------
