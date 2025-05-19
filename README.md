@@ -1,4 +1,4 @@
-# 📰⚔️ Team Meenarashi — Warriors Against the Misinformation Demons 🛡️🔥
+# 📰⚔️ Team Meenarashi — Warriors Against the Misinformation Demons 🛡🔥
 
 
 
