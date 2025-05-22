@@ -36,12 +36,14 @@ function App() {
     });
   };
 
+  handleExtract();
+
   return (
     <div className="App" style={{ width: "400px", padding: "1rem" }}>
       <h2>🧠 News Checker</h2>
-      <button onClick={handleExtract} disabled={loading}>
-        {loading ? "Analyzing..." : "Analyze This Page"}
-      </button>
+      {/* <button onClick={handleExtract} disabled={loading}> */}
+        {/* {loading ? "Analyzing..." : "Analyze This Page"} */}
+      {/* </button> */}
 
       {info && (
         <div style={{ marginTop: "1rem" }}>
