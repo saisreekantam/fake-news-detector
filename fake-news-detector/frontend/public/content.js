@@ -1,29 +1,34 @@
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === "EXTRACT_INFO") {
-    const bodyText = document.body.innerText;
-
     const getMeta = (name) =>
       document.querySelector(`meta[name='${name}']`)?.content ||
       document.querySelector(`meta[property='${name}']`)?.content ||
-      "Not available";
+      null;
+
+    // Try getting the URL from canonical or fallback to location
+    const getCanonicalUrl = () =>
+      document.querySelector("link[rel='canonical']")?.href || location.href;
 
     // Extract images: filter out blank or small ones
-    const images = Array.from(document.images)
-      .filter(img => img.src && img.naturalWidth > 100 && img.naturalHeight > 100)
-      .map(img => img.src);
+      let image = document.querySelector("meta[property='og:image']")?.content;
 
-    const metadata = {
-      title: document.title || "No title",
-      description: getMeta("description"),
-      ogTitle: getMeta("og:title"),
-      ogDesc: getMeta("og:description"),
-      author: getMeta("author")
+      if (!image) {
+        const highPriorityImage = Array.from(document.images)
+          .find(img => img.getAttribute('fetchpriority') === 'high');
+        image = highPriorityImage?.src || null;
+      }
+
+
+    const responseData = {
+      title: getMeta("og:title") || document.title || "No title",
+      description: getMeta("description") || getMeta("og:description") || "No description",
+      content: document.body.innerText.slice(0, 1000), // First 1000 chars as preview content
+      url: getCanonicalUrl(),
+      image: image,
+      published_at: getMeta("article:published_time") || null,
+      source_name: getMeta("og:site_name") || location.hostname
     };
 
-    sendResponse({ 
-      text: bodyText.slice(0, 1000), // limit for preview
-      metadata,
-      images
-    });
+    sendResponse(responseData);
   }
 });
