@@ -1,5 +1,6 @@
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === "EXTRACT_INFO") {
+    console.log("I recieved a request for scraping...");
     const getMeta = (name) =>
       document.querySelector(`meta[name='${name}']`)?.content ||
       document.querySelector(`meta[property='${name}']`)?.content ||
@@ -28,7 +29,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       published_at: getMeta("article:published_time") || null,
       source_name: getMeta("og:site_name") || location.hostname
     };
-
+    console.log("sending data....");
+    console.log(responseData);
     sendResponse(responseData);
   }
 });

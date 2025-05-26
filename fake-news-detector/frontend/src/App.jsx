@@ -15,8 +15,13 @@ function App() {
           setLoading(false);
           return;
         }
-
+        console.log("Response I have...");
+        console.log(response);
         setInfo(response);
+        if(info!=null){
+        console.log("Info i recieved....")
+        console.log(info);
+        }
 
         try {
           const res = await fetch("http://localhost:5000/analyze", {
