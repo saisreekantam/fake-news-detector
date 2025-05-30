@@ -2,7 +2,7 @@ import aiohttp
 import hashlib
 from database.repository import save_articles, get_scraped_data, article_hash_exists, store_article_hash
 
-API_KEYS = ["key1", "key2", "key3", "key4", "key5"]
+API_KEYS = ["d368eb729e9bde4eed4f6f9707647b13"]
 
 def generate_article_hash(article: dict) -> str:
     content = (article.get("title", "") + article.get("description", "") + article.get("url", "")).strip()

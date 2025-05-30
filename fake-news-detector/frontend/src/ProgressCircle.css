@@ -1,0 +1,31 @@
+.circle-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 1rem;
+  animation: fadeIn 0.8s ease-in-out;
+}
+
+.circle-label {
+  margin-top: 0.4rem;
+  font-weight: bold;
+  color: #2d3436;
+  font-size: 0.9rem;
+}
+
+.circle-value {
+  font-size: 1.1rem;
+  fill: #2d3436;
+  font-weight: bold;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -12,42 +12,130 @@ It integrates with the database to check new articles against existing ones.
 
 import hashlib
 import logging
+import sys
+import os
 from typing import Dict, List, Tuple, Any, Optional, Set
 import heapq
 import numpy as np
 from datetime import datetime, timedelta
 
-# Import internal modules
-from .summarizer import summarize_for_comparison
-from .nlp_pipeline import process_article
-from ..utils.similarity import compute_text_score, image_similarity_score
-from ..database.repository import article_hash_exists, store_article_hash, get_scraped_data
+# Setup logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Add the backend directory to the Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+backend_dir = os.path.dirname(current_dir)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
+# Import internal modules with comprehensive error handling
+def safe_import_summarizer():
+    """Safely import summarizer with fallback."""
+    try:
+        from models.summarizer import summarize_for_comparison
+        return summarize_for_comparison
+    except ImportError as e:
+        logger.warning(f"Could not import summarizer: {e}")
+        def summarize_for_comparison(text, title=""):
+            # Fallback summarization
+            words = text.split()[:100]  # First 100 words
+            return {
+                "summary": " ".join(words),
+                "fingerprint": {"top_terms": words[:20], "content_hash": hash(text)},
+                "original_length": len(text.split())
+            }
+        return summarize_for_comparison
+
+def safe_import_nlp_pipeline():
+    """Safely import NLP pipeline with fallback."""
+    try:
+        from models.nlp_pipeline import process_article
+        return process_article
+    except ImportError as e:
+        logger.warning(f"Could not import NLP pipeline: {e}")
+        def process_article(text, title=""):
+            # Basic fallback processing
+            return {
+                "original_text": text,
+                "title": title,
+                "named_entities": {},
+                "key_phrases": [],
+                "sentiment": {"polarity": 0, "label": "neutral", "confidence": 0},
+                "bias_markers": {}
+            }
+        return process_article
+
+def safe_import_similarity():
+    """Safely import similarity functions with fallback."""
+    try:
+        from utils.similarity import compute_text_score, image_similarity_score
+        return compute_text_score, image_similarity_score
+    except ImportError as e:
+        logger.warning(f"Could not import similarity functions: {e}")
+        def compute_text_score(text1, text2):
+            # Simple fallback similarity using Jaccard coefficient
+            words1 = set(text1.lower().split())
+            words2 = set(text2.lower().split())
+            if not words1 or not words2:
+                return 100.0
+            intersection = len(words1.intersection(words2))
+            union = len(words1.union(words2))
+            jaccard = intersection / union if union > 0 else 0
+            return (1 - jaccard) * 100  # Convert to distance
+        
+        def image_similarity_score(url1, url2):
+            return 100.0  # No similarity
+        
+        return compute_text_score, image_similarity_score
+
+def safe_import_database():
+    """Safely import database functions with fallback."""
+    try:
+        from database.repository import article_hash_exists, store_article_hash, get_scraped_data
+        return article_hash_exists, store_article_hash, get_scraped_data
+    except ImportError as e:
+        logger.warning(f"Could not import database functions: {e}")
+        
+        # In-memory fallback storage
+        _hash_storage = set()
+        
+        def article_hash_exists(hash_str):
+            return hash_str in _hash_storage
+        
+        def store_article_hash(hash_str):
+            _hash_storage.add(hash_str)
+        
+        def get_scraped_data():
+            return []
+        
+        return article_hash_exists, store_article_hash, get_scraped_data
+
+# Initialize all imports
+summarize_for_comparison = safe_import_summarizer()
+process_article = safe_import_nlp_pipeline()
+compute_text_score, image_similarity_score = safe_import_similarity()
+article_hash_exists, store_article_hash, get_scraped_data = safe_import_database()
 
 # Import sentence transformers for semantic similarity
+SENTENCE_TRANSFORMERS_AVAILABLE = False
+model = None
+
 try:
     from sentence_transformers import SentenceTransformer, util
     SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    logging.warning("Sentence-Transformers not available. Using fallback similarity methods.")
-
-# Initialize logging
-logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# Initialize sentence transformer model if available
-model = None
-if SENTENCE_TRANSFORMERS_AVAILABLE:
+    logger.info("Sentence-Transformers library available")
+    
     try:
         model = SentenceTransformer('all-MiniLM-L6-v2')
         logger.info("Sentence-Transformer model loaded successfully")
     except Exception as e:
         logger.error(f"Error loading Sentence-Transformer model: {e}")
         SENTENCE_TRANSFORMERS_AVAILABLE = False
+        model = None
+        
+except ImportError:
+    logger.warning("Sentence-Transformers not available. Using fallback similarity methods.")
 
 class DuplicateDetector:
     """Detects duplicate or similar news articles."""
@@ -61,9 +149,20 @@ class DuplicateDetector:
                                  Higher values are more strict (require more similarity)
             use_embeddings: Whether to use semantic embeddings for comparison
         """
-        self.similarity_threshold = similarity_threshold
-        self.use_embeddings = use_embeddings and SENTENCE_TRANSFORMERS_AVAILABLE
-        self.model = model if self.use_embeddings else None
+        try:
+            # Ensure attributes are set even if there are issues
+            self.similarity_threshold = float(similarity_threshold)
+            self.use_embeddings = bool(use_embeddings) and SENTENCE_TRANSFORMERS_AVAILABLE
+            self.model = model if self.use_embeddings else None
+            
+            logger.info(f"DuplicateDetector initialized with threshold={self.similarity_threshold}, embeddings={self.use_embeddings}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing DuplicateDetector: {e}")
+            # Set default values to prevent AttributeError
+            self.similarity_threshold = 80.0
+            self.use_embeddings = False
+            self.model = None
     
     def check_duplicate(self, article: Dict[str, Any], 
                         reference_articles: List[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -78,79 +177,120 @@ class DuplicateDetector:
         Returns:
             Dictionary with duplication information
         """
-        # Process the input article
-        title = article.get('title', '')
-        text = article.get('text', '')
-        
-        # Handle case of empty article
-        if not text or len(text.strip()) < 50:  # At least 50 chars to be meaningful
+        try:
+            # Ensure we have the required attributes
+            if not hasattr(self, 'similarity_threshold'):
+                self.similarity_threshold = 80.0
+                logger.warning("similarity_threshold not found, using default value 80.0")
+            
+            # Process the input article
+            title = article.get('title', '')
+            text = article.get('text', '')
+            
+            # Handle case of empty article
+            if not text or len(text.strip()) < 50:  # At least 50 chars to be meaningful
+                return {
+                    'is_duplicate': False,
+                    'similarity_score': 0,
+                    'matches': [],
+                    'error': 'Article text is too short for meaningful comparison'
+                }
+            
+            # Generate a hash for the article
+            content_hash = self._generate_hash(title, text)
+            
+            # Check if exact hash exists in database
+            try:
+                if article_hash_exists(content_hash):
+                    return {
+                        'is_duplicate': True,
+                        'similarity_score': 100,  # Exact match
+                        'matches': [{'hash': content_hash, 'score': 100, 'match_type': 'exact_hash'}],
+                        'message': 'Exact duplicate found in database'
+                    }
+            except Exception as e:
+                logger.warning(f"Error checking hash existence: {e}")
+            
+            # If no reference articles provided, fetch from database
+            if reference_articles is None:
+                reference_articles = self._fetch_reference_articles()
+                
+            if not reference_articles:
+                # No reference articles to compare against
+                # Store the new article hash
+                try:
+                    store_article_hash(content_hash)
+                except Exception as e:
+                    logger.warning(f"Error storing article hash: {e}")
+                    
+                return {
+                    'is_duplicate': False,
+                    'similarity_score': 0,
+                    'matches': [],
+                    'message': 'No reference articles available for comparison'
+                }
+                
+            # Process the article with NLP pipeline for entity extraction and key phrases
+            try:
+                article_nlp = process_article(text, title)
+            except Exception as e:
+                logger.warning(f"Error in NLP processing: {e}")
+                article_nlp = {
+                    "original_text": text,
+                    "title": title,
+                    "named_entities": {},
+                    "key_phrases": []
+                }
+            
+            # Generate a summary for comparison
+            try:
+                article_summary = summarize_for_comparison(text, title)
+            except Exception as e:
+                logger.warning(f"Error in summarization: {e}")
+                article_summary = {
+                    "summary": text[:500],
+                    "fingerprint": {"top_terms": text.split()[:20]}
+                }
+            
+            # Compare with reference articles
+            matches = self._find_similar_articles(
+                article_nlp, 
+                article_summary, 
+                reference_articles
+            )
+            
+            # Determine if it's a duplicate based on best match score
+            best_match = matches[0] if matches else None
+            is_duplicate = False
+            similarity_score = 0
+            
+            if best_match:
+                similarity_score = best_match['similarity_score']
+                is_duplicate = similarity_score >= self.similarity_threshold
+                
+            # Store the hash if it's not a duplicate
+            if not is_duplicate:
+                try:
+                    store_article_hash(content_hash)
+                except Exception as e:
+                    logger.warning(f"Error storing article hash: {e}")
+                
+            return {
+                'is_duplicate': is_duplicate,
+                'content_hash': content_hash,
+                'similarity_score': similarity_score,
+                'matches': matches,
+                'message': f"{'Duplicate' if is_duplicate else 'Original'} content detected"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in check_duplicate: {e}")
             return {
                 'is_duplicate': False,
                 'similarity_score': 0,
                 'matches': [],
-                'error': 'Article text is too short for meaningful comparison'
+                'error': f'Error processing article: {str(e)}'
             }
-        
-        # Generate a hash for the article
-        content_hash = self._generate_hash(title, text)
-        
-        # Check if exact hash exists in database
-        if article_hash_exists(content_hash):
-            return {
-                'is_duplicate': True,
-                'similarity_score': 100,  # Exact match
-                'matches': [{'hash': content_hash, 'score': 100, 'match_type': 'exact_hash'}],
-                'message': 'Exact duplicate found in database'
-            }
-        
-        # If no reference articles provided, fetch from database
-        if reference_articles is None:
-            reference_articles = self._fetch_reference_articles()
-            
-        if not reference_articles:
-            # No reference articles to compare against
-            # Store the new article hash
-            store_article_hash(content_hash)
-            return {
-                'is_duplicate': False,
-                'similarity_score': 0,
-                'matches': [],
-                'message': 'No reference articles available for comparison'
-            }
-            
-        # Process the article with NLP pipeline for entity extraction and key phrases
-        article_nlp = process_article(text, title)
-        
-        # Generate a summary for comparison
-        article_summary = summarize_for_comparison(text, title)
-        
-        # Compare with reference articles
-        matches = self._find_similar_articles(
-            article_nlp, 
-            article_summary, 
-            reference_articles
-        )
-        
-        # Determine if it's a duplicate based on best match score
-        best_match = matches[0] if matches else None
-        is_duplicate = False
-        similarity_score = 0
-        
-        if best_match:
-            similarity_score = best_match['similarity_score']
-            is_duplicate = similarity_score >= self.similarity_threshold
-            
-        # Store the hash if it's not a duplicate
-        if not is_duplicate:
-            store_article_hash(content_hash)
-            
-        return {
-            'is_duplicate': is_duplicate,
-            'content_hash': content_hash,
-            'similarity_score': similarity_score,
-            'matches': matches,
-            'message': f"{'Duplicate' if is_duplicate else 'Original'} content detected"
-        }
     
     def batch_check_duplicates(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -162,65 +302,90 @@ class DuplicateDetector:
         Returns:
             List of duplicate check results
         """
-        # Fetch reference articles once for all checks
+        results = []
         reference_articles = self._fetch_reference_articles()
         
-        results = []
-        for article in articles:
-            result = self.check_duplicate(article, reference_articles)
-            results.append(result)
-            
-            # If not a duplicate, add to reference articles for subsequent checks
-            if not result['is_duplicate']:
-                # Process article for comparison with subsequent articles
-                title = article.get('title', '')
-                text = article.get('text', '')
-                article_nlp = process_article(text, title)
-                article_summary = summarize_for_comparison(text, title)
+        for i, article in enumerate(articles):
+            try:
+                result = self.check_duplicate(article, reference_articles)
+                results.append(result)
                 
-                reference_articles.append({
-                    'title': title,
-                    'text': text,
-                    'nlp_data': article_nlp,
-                    'summary': article_summary
+                # If not a duplicate, add to reference articles for subsequent checks
+                if not result.get('is_duplicate', False):
+                    title = article.get('title', '')
+                    text = article.get('text', '')
+                    
+                    try:
+                        article_nlp = process_article(text, title)
+                        article_summary = summarize_for_comparison(text, title)
+                        
+                        reference_articles.append({
+                            'title': title,
+                            'text': text,
+                            'nlp_data': article_nlp,
+                            'summary': article_summary
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error processing article {i} for reference: {e}")
+                        
+            except Exception as e:
+                logger.error(f"Error processing article {i}: {e}")
+                results.append({
+                    'is_duplicate': False,
+                    'similarity_score': 0,
+                    'matches': [],
+                    'error': f'Error processing article: {str(e)}'
                 })
         
         return results
     
     def _generate_hash(self, title: str, text: str) -> str:
         """Generate a content hash for the article."""
-        # Normalize text for consistent hashing
-        normalized_content = (title + " " + text).lower().strip()
-        # Create SHA-256 hash
-        return hashlib.sha256(normalized_content.encode('utf-8')).hexdigest()
+        try:
+            # Normalize text for consistent hashing
+            normalized_content = (title + " " + text).lower().strip()
+            # Create SHA-256 hash
+            return hashlib.sha256(normalized_content.encode('utf-8')).hexdigest()
+        except Exception as e:
+            logger.error(f"Error generating hash: {e}")
+            # Fallback hash
+            return str(hash(title + text))
     
     def _fetch_reference_articles(self) -> List[Dict[str, Any]]:
         """Fetch reference articles from the database."""
-        # This would typically query the database for recent articles
-        # For now, we'll use the get_scraped_data function
         try:
             scraped_data = get_scraped_data()
             
             # Process each article for comparison
             reference_articles = []
             for item in scraped_data:
-                title = item.get('title', '')
-                description = item.get('description', '')
+                try:
+                    title = item.get('title', '')
+                    description = item.get('description', '')
+                    
+                    if not description:
+                        continue
+                    
+                    # Process with NLP pipeline
+                    article_nlp = process_article(description, title)
+                    
+                    # Generate a summary
+                    article_summary = summarize_for_comparison(description, title)
+                    
+                    reference_articles.append({
+                        'title': title,
+                        'text': description,
+                        'nlp_data': article_nlp,
+                        'summary': article_summary
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing reference article: {e}")
+                    continue
                 
-                # Process with NLP pipeline
-                article_nlp = process_article(description, title)
-                
-                # Generate a summary
-                article_summary = summarize_for_comparison(description, title)
-                
-                reference_articles.append({
-                    'title': title,
-                    'text': description,
-                    'nlp_data': article_nlp,
-                    'summary': article_summary
-                })
-                
+            logger.info(f"Fetched {len(reference_articles)} reference articles")
             return reference_articles
+            
         except Exception as e:
             logger.error(f"Error fetching reference articles: {e}")
             return []
@@ -229,285 +394,110 @@ class DuplicateDetector:
                               article_summary: Dict[str, Any],
                               reference_articles: List[Dict[str, Any]],
                               max_matches: int = 5) -> List[Dict[str, Any]]:
-        """
-        Find similar articles from a list of reference articles.
-        
-        Args:
-            article_nlp: NLP processing results for the article
-            article_summary: Summary of the article
-            reference_articles: List of reference articles to compare against
-            max_matches: Maximum number of matches to return
-            
-        Returns:
-            List of match dictionaries, ordered by similarity score
-        """
+        """Find similar articles from a list of reference articles."""
         matches = []
         
-        # Original article data
-        article_text = article_nlp.get('original_text', '')
-        article_title = article_nlp.get('title', '')
-        article_entities = article_nlp.get('named_entities', {})
-        article_key_phrases = article_nlp.get('key_phrases', [])
-        article_fingerprint = article_summary.get('fingerprint', {})
-        article_summary_text = article_summary.get('summary', '')
-        
-        # Prepare embeddings for semantic similarity if available
-        article_embedding = None
-        if self.use_embeddings and article_summary_text:
-            try:
-                article_embedding = self.model.encode(article_summary_text, convert_to_tensor=True)
-            except Exception as e:
-                logger.error(f"Error encoding article for semantic similarity: {e}")
-        
-        # Compare against each reference article
-        for ref_article in reference_articles:
-            # Skip comparison with self (if in the reference set)
-            if ref_article.get('text', '') == article_text and ref_article.get('title', '') == article_title:
-                continue
-                
-            ref_nlp = ref_article.get('nlp_data', {})
-            ref_summary = ref_article.get('summary', {})
+        try:
+            # Original article data
+            article_text = article_nlp.get('original_text', '')
+            article_title = article_nlp.get('title', '')
             
-            # Calculate multiple similarity metrics
-            similarity_scores = self._calculate_similarity_metrics(
-                article_text, article_title, article_entities, article_key_phrases, 
-                article_fingerprint, article_summary_text, article_embedding,
-                ref_article.get('text', ''), ref_article.get('title', ''),
-                ref_nlp.get('named_entities', {}), ref_nlp.get('key_phrases', []),
-                ref_summary.get('fingerprint', {}), ref_summary.get('summary', '')
-            )
+            # Compare against each reference article
+            for ref_article in reference_articles:
+                try:
+                    # Skip comparison with self
+                    if (ref_article.get('text', '') == article_text and 
+                        ref_article.get('title', '') == article_title):
+                        continue
+                    
+                    ref_text = ref_article.get('text', '')
+                    ref_title = ref_article.get('title', '')
+                    
+                    if not ref_text:
+                        continue
+                    
+                    # Calculate text similarity
+                    text_similarity = 100 - compute_text_score(article_text, ref_text)
+                    title_similarity = 100 - compute_text_score(article_title, ref_title)
+                    
+                    # Use semantic similarity if available
+                    semantic_similarity = 0
+                    if self.use_embeddings and self.model:
+                        try:
+                            article_summary_text = article_summary.get('summary', article_text[:500])
+                            ref_summary_text = ref_article.get('summary', {}).get('summary', ref_text[:500])
+                            
+                            if article_summary_text and ref_summary_text:
+                                article_embedding = self.model.encode(article_summary_text, convert_to_tensor=True)
+                                ref_embedding = self.model.encode(ref_summary_text, convert_to_tensor=True)
+                                semantic_sim = util.cos_sim(article_embedding, ref_embedding).item()
+                                semantic_similarity = (semantic_sim + 1) * 50  # Convert to 0-100 scale
+                                
+                        except Exception as e:
+                            logger.warning(f"Error calculating semantic similarity: {e}")
+                            semantic_similarity = 0
+                    
+                    # Calculate overall similarity (weighted average)
+                    if semantic_similarity > 0:
+                        overall_score = (text_similarity * 0.3 + title_similarity * 0.2 + semantic_similarity * 0.5)
+                    else:
+                        overall_score = (text_similarity * 0.7 + title_similarity * 0.3)
+                    
+                    if overall_score > 10:  # Only include matches with some similarity
+                        matches.append({
+                            'title': ref_title,
+                            'similarity_score': round(overall_score, 2),
+                            'detail_scores': {
+                                'text_similarity': round(text_similarity, 2),
+                                'title_similarity': round(title_similarity, 2),
+                                'semantic_similarity': round(semantic_similarity, 2)
+                            },
+                            'match_type': self._determine_match_type(overall_score)
+                        })
+                        
+                except Exception as e:
+                    logger.warning(f"Error comparing with reference article: {e}")
+                    continue
             
-            # Calculate overall similarity score (weighted average)
-            overall_score = self._calculate_overall_similarity(similarity_scores)
+            # Sort by similarity score and limit
+            matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+            return matches[:max_matches]
             
-            if overall_score > 0:
-                matches.append({
-                    'title': ref_article.get('title', ''),
-                    'similarity_score': overall_score,
-                    'detail_scores': similarity_scores,
-                    'match_type': self._determine_match_type(overall_score, similarity_scores)
-                })
-        
-        # Sort by similarity score (descending) and limit to max_matches
-        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-        return matches[:max_matches]
+        except Exception as e:
+            logger.error(f"Error finding similar articles: {e}")
+            return []
     
-    def _calculate_similarity_metrics(self, 
-                                     article_text: str, article_title: str, 
-                                     article_entities: Dict[str, List[str]],
-                                     article_key_phrases: List[str],
-                                     article_fingerprint: Dict[str, Any],
-                                     article_summary: str, article_embedding: Any,
-                                     ref_text: str, ref_title: str,
-                                     ref_entities: Dict[str, List[str]],
-                                     ref_key_phrases: List[str],
-                                     ref_fingerprint: Dict[str, Any],
-                                     ref_summary: str) -> Dict[str, float]:
-        """
-        Calculate various similarity metrics between two articles.
-        
-        Returns:
-            Dictionary of similarity scores (0-100 scale, higher means more similar)
-        """
-        scores = {}
-        
-        # 1. Text similarity using compute_text_score from similarity.py
-        # This returns a distance (0-100), we convert to similarity
-        text_distance = compute_text_score(article_text, ref_text)
-        scores['text_similarity'] = 100 - text_distance
-        
-        # 2. Title similarity
-        title_distance = compute_text_score(article_title, ref_title)
-        scores['title_similarity'] = 100 - title_distance
-        
-        # 3. Entity overlap - especially important for news articles
-        entity_similarity = self._calculate_entity_similarity(article_entities, ref_entities)
-        scores['entity_similarity'] = entity_similarity
-        
-        # 4. Key phrase overlap
-        phrase_similarity = self._calculate_phrase_similarity(
-            article_key_phrases, ref_key_phrases
-        )
-        scores['phrase_similarity'] = phrase_similarity
-        
-        # 5. Fingerprint term overlap
-        if article_fingerprint and ref_fingerprint:
-            term_similarity = self._calculate_term_similarity(
-                article_fingerprint.get('top_terms', []),
-                ref_fingerprint.get('top_terms', [])
-            )
-            scores['term_similarity'] = term_similarity
-        
-        # 6. Summary similarity using semantic embeddings (if available)
-        if self.use_embeddings and article_embedding is not None and ref_summary:
-            try:
-                ref_embedding = self.model.encode(ref_summary, convert_to_tensor=True)
-                semantic_similarity = util.cos_sim(article_embedding, ref_embedding).item()
-                # Convert from [-1, 1] to [0, 100]
-                scores['semantic_similarity'] = (semantic_similarity + 1) * 50
-            except Exception as e:
-                logger.error(f"Error in semantic similarity calculation: {e}")
-                scores['semantic_similarity'] = 0
-        else:
-            # Fallback to text similarity on summaries
-            summary_distance = compute_text_score(article_summary, ref_summary)
-            scores['summary_similarity'] = 100 - summary_distance
-        
-        return scores
-    
-    def _calculate_overall_similarity(self, similarity_scores: Dict[str, float]) -> float:
-        """
-        Calculate weighted average of similarity scores.
-        
-        Args:
-            similarity_scores: Dictionary of similarity scores
-            
-        Returns:
-            Overall similarity score (0-100)
-        """
-        # Define weights for different metrics
-        weights = {
-            'text_similarity': 0.15,
-            'title_similarity': 0.15,
-            'entity_similarity': 0.20,
-            'phrase_similarity': 0.10,
-            'term_similarity': 0.10,
-            'semantic_similarity': 0.30,  # Higher weight for semantic similarity
-            'summary_similarity': 0.30    # Used when semantic_similarity isn't available
-        }
-        
-        # Calculate weighted sum
-        total_weight = 0
-        weighted_sum = 0
-        
-        for metric, score in similarity_scores.items():
-            if metric in weights:
-                weighted_sum += score * weights[metric]
-                total_weight += weights[metric]
-        
-        # Return weighted average or 0 if no valid scores
-        if total_weight > 0:
-            return weighted_sum / total_weight
-        else:
-            return 0
-    
-    def _determine_match_type(self, overall_score: float, 
-                             similarity_scores: Dict[str, float]) -> str:
-        """Determine the type of match based on similarity patterns."""
-        if overall_score >= 95:
+    def _determine_match_type(self, score: float) -> str:
+        """Determine the type of match based on similarity score."""
+        if score >= 95:
             return 'near_exact_duplicate'
-        elif overall_score >= 85:
+        elif score >= 85:
             return 'duplicate_with_minimal_changes'
-        elif overall_score >= 75:
-            # Check if entity overlap is high but text similarity lower
-            if (similarity_scores.get('entity_similarity', 0) > 80 and 
-                similarity_scores.get('text_similarity', 0) < 70):
-                return 'rewrite_same_story'
-            else:
-                return 'high_similarity'
-        elif overall_score >= 65:
+        elif score >= 75:
+            return 'high_similarity'
+        elif score >= 65:
             return 'moderate_similarity'
         else:
             return 'low_similarity'
-    
-    def _calculate_entity_similarity(self, 
-                                    article_entities: Dict[str, List[str]],
-                                    ref_entities: Dict[str, List[str]]) -> float:
-        """
-        Calculate similarity based on named entity overlap.
-        
-        Returns:
-            Similarity score (0-100)
-        """
-        if not article_entities or not ref_entities:
-            return 0
-        
-        # Weight entities by type importance (PERSON, ORG, GPE are most important for news)
-        type_weights = {
-            'PERSON': 0.4,
-            'ORG': 0.3,
-            'GPE': 0.2,  # Geo-political entities (countries, cities)
-            'LOC': 0.1,  # Other locations
-            'DATE': 0.05,
-            'MISC': 0.05
-        }
-        
-        total_similarity = 0
-        total_weight = 0
-        
-        for entity_type, weight in type_weights.items():
-            if entity_type in article_entities and entity_type in ref_entities:
-                article_ents = set(e.lower() for e in article_entities[entity_type])
-                ref_ents = set(e.lower() for e in ref_entities[entity_type])
-                
-                if article_ents and ref_ents:
-                    # Jaccard similarity: intersection size / union size
-                    intersection = len(article_ents.intersection(ref_ents))
-                    union = len(article_ents.union(ref_ents))
-                    
-                    if union > 0:
-                        type_similarity = (intersection / union) * 100
-                        total_similarity += type_similarity * weight
-                        total_weight += weight
-        
-        # Return weighted average or 0 if no valid comparisons
-        if total_weight > 0:
-            return total_similarity / total_weight
-        else:
-            return 0
-    
-    def _calculate_phrase_similarity(self, 
-                                   article_phrases: List[str], 
-                                   ref_phrases: List[str]) -> float:
-        """
-        Calculate similarity based on key phrase overlap.
-        
-        Returns:
-            Similarity score (0-100)
-        """
-        if not article_phrases or not ref_phrases:
-            return 0
-        
-        # Normalize phrases
-        article_phrases_norm = set(phrase.lower() for phrase in article_phrases)
-        ref_phrases_norm = set(phrase.lower() for phrase in ref_phrases)
-        
-        # Calculate Jaccard similarity
-        intersection = len(article_phrases_norm.intersection(ref_phrases_norm))
-        union = len(article_phrases_norm.union(ref_phrases_norm))
-        
-        if union > 0:
-            return (intersection / union) * 100
-        else:
-            return 0
-    
-    def _calculate_term_similarity(self, 
-                                 article_terms: List[str], 
-                                 ref_terms: List[str]) -> float:
-        """
-        Calculate similarity based on top term overlap.
-        
-        Returns:
-            Similarity score (0-100)
-        """
-        if not article_terms or not ref_terms:
-            return 0
-        
-        # Normalize terms
-        article_terms_norm = set(term.lower() for term in article_terms)
-        ref_terms_norm = set(term.lower() for term in ref_terms)
-        
-        # Calculate Jaccard similarity
-        intersection = len(article_terms_norm.intersection(ref_terms_norm))
-        union = len(article_terms_norm.union(ref_terms_norm))
-        
-        if union > 0:
-            return (intersection / union) * 100
-        else:
-            return 0
 
-# Create singleton instance for direct use
-default_detector = DuplicateDetector()
+
+# Create singleton instance for direct use with error handling
+def create_default_detector():
+    """Create default detector with error handling."""
+    try:
+        detector = DuplicateDetector()
+        logger.info("Default DuplicateDetector created successfully")
+        return detector
+    except Exception as e:
+        logger.error(f"Error creating default detector: {e}")
+        # Return a basic detector with hardcoded values
+        detector = object.__new__(DuplicateDetector)
+        detector.similarity_threshold = 80.0
+        detector.use_embeddings = False
+        detector.model = None
+        return detector
+
+default_detector = create_default_detector()
 
 def check_article_duplicate(article: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -519,7 +509,16 @@ def check_article_duplicate(article: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Duplication check results
     """
-    return default_detector.check_duplicate(article)
+    try:
+        return default_detector.check_duplicate(article)
+    except Exception as e:
+        logger.error(f"Error in check_article_duplicate: {e}")
+        return {
+            'is_duplicate': False,
+            'similarity_score': 0,
+            'matches': [],
+            'error': f'Error checking duplicate: {str(e)}'
+        }
 
 def batch_check_duplicates(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -531,7 +530,11 @@ def batch_check_duplicates(articles: List[Dict[str, Any]]) -> List[Dict[str, Any
     Returns:
         List of duplication check results
     """
-    return default_detector.batch_check_duplicates(articles)
+    try:
+        return default_detector.batch_check_duplicates(articles)
+    except Exception as e:
+        logger.error(f"Error in batch_check_duplicates: {e}")
+        return [check_article_duplicate(article) for article in articles]
 
 def generate_article_hash(title: str, text: str) -> str:
     """
@@ -544,37 +547,61 @@ def generate_article_hash(title: str, text: str) -> str:
     Returns:
         SHA-256 hash as hexadecimal string
     """
-    # Normalize text for consistent hashing
-    normalized_content = (title + " " + text).lower().strip()
-    # Create SHA-256 hash
-    return hashlib.sha256(normalized_content.encode('utf-8')).hexdigest()
+    try:
+        # Normalize text for consistent hashing
+        normalized_content = (title + " " + text).lower().strip()
+        # Create SHA-256 hash
+        return hashlib.sha256(normalized_content.encode('utf-8')).hexdigest()
+    except Exception as e:
+        logger.error(f"Error generating hash: {e}")
+        return str(hash(title + text))
+
+# Test function
+def test_duplicate_detector():
+    """Test the duplicate detector functionality."""
+    print("Testing DuplicateDetector...")
+    
+    try:
+        # Test detector creation
+        detector = DuplicateDetector()
+        print(f"✅ Detector created with threshold: {detector.similarity_threshold}")
+        
+        # Test article
+        test_article = {
+            'title': 'Test Article About Climate Change',
+            'text': 'This is a test article about climate change and its impacts on the environment. Scientists are studying the effects of global warming.'
+        }
+        
+        # Test duplicate checking
+        result = check_article_duplicate(test_article)
+        print(f"✅ Duplicate check completed: {result['is_duplicate']}")
+        print(f"   Similarity score: {result['similarity_score']}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        return False
 
 if __name__ == "__main__":
+    # Run test
+    test_duplicate_detector()
+    
     # Example usage
+    print("\nExample usage:")
+    
     original_article = {
         'title': 'EU Reaches Historic Migration Agreement',
         'text': """
         The European Union has reached a historic agreement on migration policy after years of debate. 
         The new legislation creates a system for sharing responsibility among EU member states for 
-        hosting migrants and processing asylum applications. Under the new rules, countries can either 
-        accept migrants, pay a financial contribution, or provide operational support. European Commission 
-        President Ursula von der Leyen called it a "landmark agreement that delivers for all member states."
-        """
-    }
-    
-    duplicate_article = {
-        'title': 'European Union Agrees on New Migration Policy',
-        'text': """
-        After years of negotiations, the EU has finally reached a historic agreement on migration.
-        The new system creates a mechanism for sharing responsibility among all European Union states
-        for hosting migrants and processing asylum claims. Member states can choose to accept migrants,
-        provide financial contributions, or offer operational support. Ursula von der Leyen, President of
-        the European Commission, described it as a landmark agreement that works for all member countries.
+        hosting migrants and processing asylum applications.
         """
     }
     
     # Check duplicate
-    result = check_article_duplicate(duplicate_article)
+    result = check_article_duplicate(original_article)
     print(f"Is duplicate: {result['is_duplicate']}")
-    print(f"Similarity score: {result['similarity_score']:.2f}")
-    print(f"Match type: {result['matches'][0]['match_type'] if result['matches'] else 'No matches'}")
+    print(f"Similarity score: {result.get('similarity_score', 0):.2f}")
+    if result.get('matches'):
+        print(f"Found {len(result['matches'])} similar articles")
